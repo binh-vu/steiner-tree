@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "steiner-tree"
+version = "1.0.0"
+description = "Steiner Tree algorithms"
+authors = ["Binh Vu <binh@toan2.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.6"
+networkx = "^2.6.3"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
