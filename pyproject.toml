@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "steiner-tree"
-version = "1.0.0"
+version = "1.1.0"
 description = "Steiner Tree algorithms"
 authors = ["Binh Vu <binh@toan2.com>"]
 license = "MIT"
