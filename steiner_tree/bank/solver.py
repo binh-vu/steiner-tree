@@ -32,6 +32,18 @@ EdgeTriple = Tuple[str, str, str]
 
 
 class BankSolver(Generic[Node, Edge]):
+    """
+    Args:
+        original_graph: the original graph that we want to find steiner tree
+        terminal_nodes: terminal nodes that the steiner tree should have
+        weight_fn: function that extract weights from edges
+        solution_cmp_fn: function to compare & sort solutions
+        top_k_st: top K solutions to return
+        top_k_path: top K paths to keep during backward search
+        allow_shorten_graph: allow the graph to be shorten if possible
+        invalid_roots: nodes that should not be considered as roots
+    """
+
     def __init__(
         self,
         original_graph: IGraph[str, int, str, Node, Edge],
@@ -41,6 +53,7 @@ class BankSolver(Generic[Node, Edge]):
         top_k_st: int = 10,
         top_k_path: int = 10,
         allow_shorten_graph: bool = True,
+        invalid_roots: Optional[Set[str]] = None,
     ):
         # original graph
         self.original_graph = original_graph
@@ -60,6 +73,7 @@ class BankSolver(Generic[Node, Edge]):
         self.top_k_st = top_k_st
         self.top_k_path = top_k_path
         self.allow_shorten_graph = allow_shorten_graph
+        self.invalid_roots = invalid_roots or set()
 
     def run(self):
         self.graph, removed_nodes = self._preprocessing(
@@ -183,20 +197,10 @@ class BankSolver(Generic[Node, Edge]):
             if edge_triple in removed_nodes:
                 for subedge in removed_nodes[edge_triple]:
                     selected_edges.append((subedge.source, subedge.target, subedge.key))
-                # _, inedge, outedge = removed_nodes[edge_triple]
-                # selected_edges.append((inedge.source, inedge.target, inedge.key))
-                # selected_edges.append((outedge.source, outedge.target, outedge.key))
             else:
                 selected_edges.append(edge_triple)
 
         return g.subgraph_from_edge_triples(selected_edges)
-        # for edge in g.edges():
-        #     if (edge.source, edge.target, edge.key) not in selected_edges:
-        #         g.remove_edge_between_nodes(edge.source, edge.target, edge.key)
-        # for u in g.nodes():
-        #     if g.degree(u.id) == 0:
-        #         g.remove_node(u.id)
-        # return g
 
     def _merge_graph(self, g1: BankGraph, g2: BankGraph) -> BankGraph:
         g = g1.copy()
@@ -226,7 +230,7 @@ class BankSolver(Generic[Node, Edge]):
         """Despite the name, this is finding steiner tree. Assuming their is a root node that connects all
         terminal nodes together.
         """
-        roots = {u.id for u in g.iter_nodes()}
+        roots = {u.id for u in g.iter_nodes() if u.id not in self.invalid_roots}
 
         attr_visit_hists: List[Tuple[str, UpwardTraversal]] = []
         # to ensure the order
@@ -325,16 +329,14 @@ class BankSolver(Generic[Node, Edge]):
                             for n in pg.nodes():
                                 if pg.in_degree(n.id) == 0 and pg.out_degree(n.id) == 0:
                                     pg.remove_node(n.id)
-                        # after add a path to the graph, it can create new cycle, detect and fix it
-                        if has_cycle(pg):
-                            # we can show that if the graph contain cycle, there is a better path
-                            # so no need to try to break cycles as below
-                            # cycles_iter = [(uid, vid) for uid, vid, eid, orien in cycles_iter]
-                            # for _g in self._break_cycles(root, pg, cycles_iter):
-                            #     next_states.append(_g)
-                            pass
-                        else:
+                        # after add a path to the graph, it can create new cycle
+                        if not has_cycle(pg):
                             next_states.append(pg)
+                        else:
+                            # when the graph cotnains cycle, we have explored a subpath
+                            # that do not create a cycle, so we can skip it.
+                            # if we want to break cycle, try contracting and lift (like in edmonds algorithm)
+                            pass
 
                         # the output graph should not have parallel edges
                         assert not pg.has_parallel_edges()
@@ -350,61 +352,6 @@ class BankSolver(Generic[Node, Edge]):
             results += current_states
 
         return self._sort_solutions(results)
-
-    def _break_cycles(
-        self, root: str, g: BankGraph, cycles_iter: List[Tuple[str, str]]
-    ):
-        # g = current_states[0]; g = self.output_graphs[0]
-        # pos = nx.kamada_kawai_layout(g); nx.draw_networkx(g, pos); nx.draw_networkx_edge_labels(g, pos, edge_labels={(u, v): d for u, v, d in g.edges(keys=True)}); plt.show()
-        # nx.draw(g); plt.show()
-        return self._break_cycles_brute_force(root, g, cycles_iter)
-
-    def _break_cycles_brute_force(
-        self, root: str, g: BankGraph, cycles_iter: List[Tuple[str, str]]
-    ):
-        # one side effect of this approach is that it may separate the graph
-        # currently we say it only happen when the target node of the remove edge only has one incoming edge
-        # if it has two edges, then the other source (not of the remove edge) must have a path from root -> itself
-        # now, since we have cascade removing, if the path doesn't go through the removed node, then it's okay,
-        # if the path goes through the remove node, it's impossible since we only remove node that indegree == 0 or
-        # outdegree == 0
-        parallel_edges = []
-        for uid, vid in cycles_iter:
-            if g.in_degree(vid) == 1:
-                # we can't remove this edge, as removing it will make it's unreachable from the root
-                # so just skip edge
-                continue
-            edges = g.get_edges_between_nodes(uid, vid)
-            edge_weight = min(edges, key=attrgetter("weight")).weight
-            parallel_edges.append((uid, vid, edges, edge_weight))
-
-        # not comparing based on weight anymore since psl can be quite difficult to select correct edge
-        # min_edge_weight = min(parallel_edges, key=itemgetter(3))[3]
-        # unbreakable = {i for i, x in enumerate(parallel_edges) if x[3] == min_edge_weight}
-        # new_graphs = []
-        # if len(unbreakable) < len(parallel_edges):
-        #     # it's great! we have some edge to break!
-        #     # for each breakable edge, we will have a new graph
-        #     for i, item in enumerate(parallel_edges):
-        #         if i in unbreakable:
-        #             continue
-        #         ng: nx.MultiDiGraph = g.copy()
-        #         ng.remove_edge(item[0], item[1])
-        #         ng = self._remove_redundant_nodes(root, ng)
-        #         new_graphs.append(ng)
-        # else:
-        # so bad, we have to try one by one
-        new_graphs = []
-        for uid, vid, edges, edge_weight in parallel_edges:
-            ng = g.copy()
-            ng.remove_edges_between_nodes(uid, vid)
-            # self._draw(ng); self._draw(g)
-            ng = self._remove_redundant_nodes(root, ng)
-            new_graphs.append(ng)
-
-        # just assert if it works as expected
-        assert not any(has_cycle(ng) for ng in new_graphs)
-        return new_graphs
 
     def _sort_solutions(self, graphs: List[BankGraph]):
         """Sort the solutions, tree with the smaller weight is better (minimum steiner tree)"""
