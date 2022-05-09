@@ -42,6 +42,17 @@ class Solution:
     def num_edges(self):
         return sum(edge.n_edges for edge in self.graph.iter_edges())
 
+    @staticmethod
+    def from_graph(graph: BankGraph):
+        id = Solution.get_id(graph)
+        weight = sum(e.weight for e in graph.iter_edges())
+        return Solution(id, graph, weight)
+
+    @staticmethod
+    def get_id(graph: BankGraph):
+        """Get the id of a graph, which is the set of all edges in the graph"""
+        return frozenset(((e.source, e.target, e.key) for e in graph.iter_edges()))
+
 
 class NoSingleRootException(Exception):
     pass

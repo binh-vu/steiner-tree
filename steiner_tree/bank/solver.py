@@ -27,6 +27,8 @@ from steiner_tree.bank.struct import (
 from functools import cmp_to_key
 from operator import attrgetter
 
+from steiner_tree.disconnected import PSEUDO_ROOT_ID, add_pseudo_root
+
 
 EdgeTriple = Tuple[str, str, str]
 
@@ -60,7 +62,8 @@ class BankSolver(Generic[Node, Edge]):
         # function that extract weights
         self.weight_fn = weight_fn
         # function to compare & sort solutions
-        self.solution_cmp_fn = (
+        self.solution_cmd_fn = solution_cmp_fn or (lambda x, y: x.weight - y.weight)
+        self.solution_key_fn = (
             cmp_to_key(solution_cmp_fn)
             if solution_cmp_fn is not None
             else attrgetter("weight")
@@ -81,34 +84,66 @@ class BankSolver(Generic[Node, Edge]):
         )
 
         if is_weakly_connected(self.graph):
-            self.solutions = self._solve(
-                self.graph, self.terminal_nodes, self.top_k_st, self.top_k_path
-            )
+            graphs = [self.graph]
         else:
             graphs = self._split_connected_components(self.graph)
-            final_solutions = None
-            for g in graphs:
-                terminal_nodes = self.terminal_nodes.intersection(
-                    [n.id for n in g.iter_nodes()]
-                )
-                solutions = self._solve(
-                    g, terminal_nodes, self.top_k_st, self.top_k_path
-                )
-                if final_solutions is None:
-                    final_solutions = solutions
-                else:
-                    next_solutions = []
-                    for current_sol in final_solutions:
-                        for sol in solutions:
-                            next_solutions.append(
-                                self._merge_graph(current_sol.graph, sol.graph)
-                            )
-                    final_solutions = self._sort_solutions(next_solutions)[
-                        : self.top_k_st
-                    ]
 
-            if final_solutions is not None:
-                self.solutions = final_solutions
+        final_solutions = None
+        for g in graphs:
+            terminal_nodes = self.terminal_nodes.intersection(
+                [n.id for n in g.iter_nodes()]
+            )
+
+            newg = g
+            try:
+                solutions: List[Solution] = self._solve(
+                    newg, terminal_nodes, self.top_k_st, self.top_k_path
+                )
+            except NoSingleRootException:
+                # add pseudo root to ensure that we have a directed root tree
+                newg = self._add_pseudo_root(g)
+                solutions: List[Solution] = self._solve(
+                    newg, terminal_nodes, self.top_k_st, self.top_k_path
+                )
+
+            # remove pseudo root from the solutions
+            lst: List[Solution] = []
+            has_pseudo_roots = False
+            for i, sol in enumerate(solutions):
+                if sol.graph.has_node(PSEUDO_ROOT_ID):
+                    has_pseudo_roots = True
+                    sol.graph.remove_node(PSEUDO_ROOT_ID)
+                    if sol.graph.num_edges() == 0:
+                        # can happen when all terminal nodes connected to the pseudo root
+                        continue
+                lst.append(Solution.from_graph(sol.graph))
+
+            # comparing average != sum, and the order may change with one additional edge
+            # e.g., before: (num_edges=5, weight=9.03) > (num_edges=4, weight=6.93)
+            # after adding one edge of 10.8: (num_edges=6, weight=19.83) < (num_edges=5, weight=17.73)
+            # however, for simplicity, we do not re-sort them, simply because one of the terminal can connect
+            # to the pseudo root or to a normal node, after removing the pseudo root, the bad solution now
+            # may have a slightly better weight (less than 1 edge) than the root solution.
+            # TODO: address this issue as later we do sort, for now, select the top 1 so that sorting
+            # won't affect the result
+            if has_pseudo_roots:
+                lst = lst[:1]
+            solutions = lst
+
+            if final_solutions is None:
+                final_solutions = solutions
+            else:
+                next_solutions = []
+                for current_sol in final_solutions:
+                    for sol in solutions:
+                        next_solutions.append(
+                            self._merge_graph(current_sol.graph, sol.graph)
+                        )
+
+                final_solutions = self._sort_solutions(next_solutions)[: self.top_k_st]
+
+        if final_solutions is not None:
+            self.solutions = final_solutions
 
         # [self._get_roots(sol.graph) for sol in self.solutions]
         # [sol.weight for sol in self.solutions]
@@ -358,31 +393,25 @@ class BankSolver(Generic[Node, Edge]):
         solutions: Dict[Any, Solution] = {}
         for g in graphs:
             # id of the graph is the edge
-            id = frozenset(((e.source, e.target, e.key) for e in g.iter_edges()))
+            id = Solution.get_id(g)
             if id in solutions:
                 continue
 
             weight = sum(e.weight for e in g.iter_edges())
             solutions[id] = Solution(id, g, weight)
 
-        _solutions = sorted(solutions.values(), key=self.solution_cmp_fn)
+        _solutions = sorted(solutions.values(), key=self.solution_key_fn)
         return _solutions
 
-    def _remove_redundant_nodes(self, root: str, g: BankGraph):
-        # remove nodes in the graph that shouldn't be in a steiner tree
-        while True:
-            removed_nodes = []
-            for u in g.nodes():
-                if u.id == root or u.id in self.terminal_nodes:
-                    continue
-                if g.in_degree(u.id) == 0 or g.out_degree(u.id) == 0:
-                    removed_nodes.append(u.id)
-            if len(removed_nodes) == 0:
-                break
-            for uid in removed_nodes:
-                g.remove_node(uid)
-        return g
-
-    def _get_roots(self, g: BankGraph):
-        """This function is mainly used for debugging"""
-        return [u.id for u in g.iter_nodes() if g.in_degree(u.id) == 0]
+    def _add_pseudo_root(self, g: BankGraph) -> BankGraph:
+        default_weight = sum(e.weight for e in g.iter_edges()) + 1
+        return add_pseudo_root(
+            g,
+            create_node=BankNode,
+            create_edge=lambda uid, vid, eid: BankEdge(
+                -1, uid, vid, eid, default_weight, n_edges=1
+            ),
+            connecting_nodes={
+                n.id for n in g.iter_nodes() if n.id not in self.invalid_roots
+            },
+        )
