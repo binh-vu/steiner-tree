@@ -1,34 +1,26 @@
+from __future__ import annotations
+
 from collections import defaultdict
 from copy import copy
-from typing import (
-    Any,
-    Dict,
-    Set,
-    Callable,
-    Optional,
-    List,
-    Generic,
-    Tuple,
-)
-from graph.interface import IGraph, Node, Edge
+from functools import cmp_to_key
+from operator import attrgetter
+from typing import Any, Callable, Dict, Generic, List, Optional, Set, Tuple
+
+from graph.interface import Edge, IGraph, Node
 from graph.retworkx.api import (
+    has_cycle,
     is_weakly_connected,
     weakly_connected_components,
-    has_cycle,
 )
 from steiner_tree.bank.struct import (
-    BankGraph,
     BankEdge,
+    BankGraph,
     BankNode,
     NoSingleRootException,
     Solution,
     UpwardTraversal,
 )
-from functools import cmp_to_key
-from operator import attrgetter
-
 from steiner_tree.disconnected import PSEUDO_ROOT_ID, add_pseudo_root
-
 
 EdgeTriple = Tuple[str, str, str]
 
@@ -262,7 +254,7 @@ class BankSolver(Generic[Node, Edge]):
         top_k_st: int,
         top_k_path: int,
     ):
-        """Despite the name, this is finding steiner tree. Assuming their is a root node that connects all
+        """Despite the name, this is finding steiner tree. Assuming there is a root node that connects all
         terminal nodes together.
         """
         roots = {u.id for u in g.iter_nodes() if u.id not in self.invalid_roots}
@@ -302,6 +294,7 @@ class BankSolver(Generic[Node, Edge]):
                 for e in path.path:
                     pg.add_node(BankNode(e.source))
                     pg.add_edge(e.clone())
+                self._bank_graph_postconstruction(pg, 1)
                 current_states.append(pg)
 
             if len(current_states) > top_k_st:
@@ -309,7 +302,7 @@ class BankSolver(Generic[Node, Edge]):
                     _s.graph for _s in self._sort_solutions(current_states)[:top_k_st]
                 ]
 
-            for uid, visit_hist in attr_visit_hists[1:]:
+            for n_attrs, (uid, visit_hist) in enumerate(attr_visit_hists[1:], start=2):
                 next_states = []
                 for state in current_states:
                     for path in visit_hist.paths[root]:
@@ -326,49 +319,12 @@ class BankSolver(Generic[Node, Edge]):
                             if not pg.has_edges_between_nodes(e.source, e.target):
                                 pg.add_edge(e.clone())
 
-                        # if there are more than path between two nodes within
-                        # two hop, we'll select one
-                        update_graph = False
-                        for n in pg.iter_nodes():
-                            if pg.in_degree(n.id) >= 2:
-                                grand_parents: Dict[
-                                    str, List[Tuple[BankEdge, ...]]
-                                ] = defaultdict(list)
-                                for inedge in pg.in_edges(n.id):
-                                    grand_parents[inedge.source].append((inedge,))
-                                    for grand_inedge in pg.in_edges(inedge.source):
-                                        grand_parents[grand_inedge.source].append(
-                                            (grand_inedge, inedge)
-                                        )
-
-                                for grand_parent, edges in grand_parents.items():
-                                    if len(edges) > 1:
-                                        # we need to select one path from this grand parent to the rest
-                                        # they have the same length, so we select the one has smaller weight
-                                        edges = sorted(
-                                            edges,
-                                            key=lambda x: x[0].weight + x[1].weight
-                                            if len(x) == 2
-                                            else x[0].weight * 2,
-                                        )
-
-                                        for lst in edges[1:]:
-                                            for edge in lst:
-                                                # TODO: handle removing edges multiple times
-                                                try:
-                                                    pg.remove_edge(edge.id)
-                                                except:
-                                                    continue
-                                        update_graph = True
-                        if update_graph:
-                            for n in pg.nodes():
-                                if pg.in_degree(n.id) == 0 and pg.out_degree(n.id) == 0:
-                                    pg.remove_node(n.id)
+                        self._bank_graph_postconstruction(pg, n_attrs)
                         # after add a path to the graph, it can create new cycle
                         if not has_cycle(pg):
                             next_states.append(pg)
                         else:
-                            # when the graph cotnains cycle, we have explored a subpath
+                            # when the graph contains cycle, we have explored a subpath
                             # that do not create a cycle, so we can skip it.
                             # if we want to break cycle, try contracting and lift (like in edmonds algorithm)
                             pass
@@ -415,3 +371,83 @@ class BankSolver(Generic[Node, Edge]):
                 n.id for n in g.iter_nodes() if n.id not in self.invalid_roots
             },
         )
+
+    def _bank_graph_postconstruction(
+        self, g: BankGraph, n_attrs: int, update_graph: bool = False
+    ) -> bool:
+        """Post-graph construction step. This mutates the graph and can be used to:
+
+        (1) modify how the graph is created such as adding required edges if select a node.
+        (2) remove multiple paths between two nodes as we are doing in this implementation
+        """
+        if n_attrs == 1:
+            return False
+
+        update_graph = update_graph or self._remove_multiple_paths_within_two_hop(g)
+        if update_graph:
+            self._remove_standalone_nodes(g)
+        return update_graph
+
+    def _remove_multiple_paths_within_two_hop(self, g: BankGraph) -> bool:
+        """Modify the graph to remove multiple paths between two nodes within two hop. This function
+        mutates the graph"""
+        update_graph = False
+        for n in g.iter_nodes():
+            if g.in_degree(n.id) >= 2:
+                # hop 1
+                grand_parents: dict[str, list[tuple[BankEdge, ...]]] = defaultdict(list)
+                for inedge in g.in_edges(n.id):
+                    grand_parents[inedge.source].append((inedge,))
+
+                for grand_parent, edges in grand_parents.items():
+                    if len(edges) > 1:
+                        # we need to select one path from this grand parent to the rest
+                        # they have the same length, so we select the one has smaller weight
+                        edges = sorted(
+                            edges,
+                            key=lambda x: x[0].weight + x[1].weight
+                            if len(x) == 2
+                            else x[0].weight * 2,
+                        )
+                        for lst in edges[1:]:
+                            for edge in lst:
+                                g.remove_edge(edge.id)
+                        update_graph = True
+
+                # hop 2
+                grand_parents: dict[str, list[tuple[BankEdge, ...]]] = defaultdict(list)
+                for inedge in g.in_edges(n.id):
+                    for grand_inedge in g.in_edges(inedge.source):
+                        grand_parents[grand_inedge.source].append(
+                            (grand_inedge, inedge)
+                        )
+
+                for grand_parent, edges in grand_parents.items():
+                    if len(edges) > 1:
+                        # we need to select one path from this grand parent to the rest
+                        # they have the same length, so we select the one has smaller weight
+                        edges = sorted(
+                            edges,
+                            key=lambda x: x[0].weight + x[1].weight
+                            if len(x) == 2
+                            else x[0].weight * 2,
+                        )
+                        for lst in edges[1:]:
+                            for edge in lst:
+                                g.remove_edge(edge.id)
+
+                        # make sure that all edges that we want to retain are still there
+                        # so no duplicate edges are removed
+                        for edge in edges[0]:
+                            assert g.has_edge(edge.id)
+
+                        update_graph = True
+        return update_graph
+
+    def _remove_standalone_nodes(self, g: BankGraph) -> bool:
+        """Remove standalone nodes"""
+        prev_n_nodes = g.num_nodes()
+        for n in g.nodes():
+            if g.degree(n.id) == 0:
+                g.remove_node(n.id)
+        return g.num_nodes() != prev_n_nodes
