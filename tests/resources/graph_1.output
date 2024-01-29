@@ -1,0 +1,4 @@
+stmt:col:1-P991 -> P102 -> col:4 (1.118)
+col:1 -> P991 -> stmt:col:1-P991 (1.118)
+stmt:col:3-P463 -> P768 -> col:1 (0.639)
+col:3 -> P463 -> stmt:col:3-P463 (0.639)

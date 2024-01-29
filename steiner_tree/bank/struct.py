@@ -1,10 +1,10 @@
-from typing import Dict, FrozenSet, List, Set, Union
-from dataclasses import dataclass
 import copy
+from dataclasses import dataclass
 from functools import cached_property
-from graph.retworkx import RetworkXStrDiGraph, BaseNode, BaseEdge, EdgeKey
 from operator import attrgetter
+from typing import Dict, FrozenSet, List, Set, Union
 
+from graph.retworkx import BaseEdge, BaseNode, EdgeKey, RetworkXStrDiGraph
 
 BankNode = BaseNode[str]
 
@@ -43,9 +43,8 @@ class Solution:
         return sum(edge.n_edges for edge in self.graph.iter_edges())
 
     @staticmethod
-    def from_graph(graph: BankGraph):
+    def from_graph(graph: BankGraph, weight: float):
         id = Solution.get_id(graph)
-        weight = sum(e.weight for e in graph.iter_edges())
         return Solution(id, graph, weight)
 
     @staticmethod

@@ -108,7 +108,9 @@ class BankSolver(Generic[Node, Edge]):
                     if sol.graph.num_edges() == 0:
                         # can happen when all terminal nodes connected to the pseudo root
                         continue
-                lst.append(Solution.from_graph(sol.graph))
+                lst.append(
+                    Solution.from_graph(sol.graph, self._get_solution_weight(sol.graph))
+                )
 
             # comparing average != sum, and the order may change with one additional edge
             # e.g., before: (num_edges=5, weight=9.03) > (num_edges=4, weight=6.93)
@@ -353,11 +355,14 @@ class BankSolver(Generic[Node, Edge]):
             if id in solutions:
                 continue
 
-            weight = sum(e.weight for e in g.iter_edges())
+            weight = self._get_solution_weight(g)
             solutions[id] = Solution(id, g, weight)
 
         _solutions = sorted(solutions.values(), key=self.solution_key_fn)
         return _solutions
+
+    def _get_solution_weight(self, graph: BankGraph):
+        return sum(e.weight for e in graph.iter_edges())
 
     def _add_pseudo_root(self, g: BankGraph) -> BankGraph:
         default_weight = sum(e.weight for e in g.iter_edges()) + 1
@@ -383,7 +388,7 @@ class BankSolver(Generic[Node, Edge]):
         if n_attrs == 1:
             return False
 
-        update_graph = update_graph or self._remove_multiple_paths_within_two_hop(g)
+        update_graph = self._remove_multiple_paths_within_two_hop(g) or update_graph
         if update_graph:
             self._remove_standalone_nodes(g)
         return update_graph
