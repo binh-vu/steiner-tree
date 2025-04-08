@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "steiner-tree"
-version = "1.2.0"
+version = "1.2.1"
 description = "Steiner Tree algorithms"
 authors = ["Binh Vu <binh@toan2.com>"]
 license = "MIT"
@@ -8,7 +8,7 @@ homepage = "https://github.com/binh-vu/steiner-tree"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-networkx = "^2.6.3"
+networkx = "^3.2.1"
 graph-wrapper = "^1.7.1"
 
 [tool.poetry.dev-dependencies]
