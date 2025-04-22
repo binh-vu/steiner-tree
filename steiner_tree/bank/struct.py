@@ -106,13 +106,17 @@ class UpwardTraversal:
     # the node that we start traversing upward from
     source_id: str
 
-    # storing that we can reach this node through those list of paths
+    # storing the upstream nodes that we can reach (from the source node) through these list of paths
     paths: Dict[str, List[UpwardPath]]
 
     @staticmethod
     def top_k_beamsearch(g: BankGraph, start_node_id: str, top_k_path: int):
         travel_hist = UpwardTraversal(start_node_id, dict())
         travel_hist.paths[start_node_id] = [UpwardPath.empty(start_node_id)]
+
+        explored_paths: Dict[str, Set[FrozenSet[str]]] = {
+            start_node_id: {travel_hist.paths[start_node_id][0].id}
+        }
 
         stack = [start_node_id]
         while len(stack) > 0:
@@ -122,8 +126,10 @@ class UpwardTraversal:
                 if inedge.source not in travel_hist.paths:
                     # we haven't visited this node yet
                     travel_hist.paths[inedge.source] = []
+                    explored_paths[inedge.source] = set()
 
-                prev_paths = {p.id for p in travel_hist.paths[inedge.source]}
+                # prev_paths = {p.id for p in travel_hist.paths[inedge.source]}
+                prev_paths = explored_paths[inedge.source]
 
                 new_paths = []
                 for path in travel_hist.paths[inedge.target]:
@@ -131,24 +137,27 @@ class UpwardTraversal:
                         # path will become loopy, which we don't want to have
                         continue
                     path = path.push(inedge)
-                    path.visited_nodes
-
                     if path.id not in prev_paths:
                         new_paths.append(path)
+                        # mark that we explored this path
+                        prev_paths.add(path.id)
 
-                travel_hist.paths[inedge.source].extend(new_paths)
-                if len(travel_hist.paths[inedge.source]) > top_k_path:
-                    travel_hist.sort_paths(inedge.source)
-                    travel_hist.paths[inedge.source] = travel_hist.paths[inedge.source][
-                        :top_k_path
-                    ]
+                if len(new_paths) > 0:
+                    travel_hist.paths[inedge.source].extend(new_paths)
+                    if len(travel_hist.paths[inedge.source]) > top_k_path:
+                        before_paths = {p.id for p in travel_hist.paths[inedge.source]}
+                        travel_hist.sort_paths(inedge.source)
+                        travel_hist.paths[inedge.source] = travel_hist.paths[
+                            inedge.source
+                        ][:top_k_path]
+                        current_paths = {p.id for p in travel_hist.paths[inedge.source]}
+                        has_new_paths = before_paths != current_paths
+                    else:
+                        has_new_paths = True
 
-                if {p.id for p in travel_hist.paths[inedge.source]} != prev_paths:
-                    # the path changes, we propagate the changes to the parent nodes
-                    stack.append(inedge.source)
-                else:
-                    # we must already explore the parent node
-                    assert inedge.source in travel_hist.paths
+                    if has_new_paths:
+                        # the path changes, we propagate the changes to the parent nodes
+                        stack.append(inedge.source)
 
         return travel_hist
 
